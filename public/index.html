@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shared Space</title>
+    <link rel="stylesheet" href="styles.css">
+    <style>
+        canvas {
+            border: 1px solid black;
+        }
+    </style>
+</head>
+
+<body>
+    <div>
+        <div style="display: flex; justify-content: center; align-items: center; gap: 1rem">
+            <div>
+                <h2>Walk Around using the Arrow Keys</h2>
+                <h3>Each user is represented with a new dot on the screen</h3>
+                <canvas id="canvas" width="800" height="600"></canvas>
+            </div>
+            <div>
+                <h2>Chat</h2>
+                <div id="chat-window"
+                    style="width: 800px; height: 500px; border: 1px solid black; overflow-y: scroll; margin-bottom: 10px;">
+                </div>
+                <input type="text" id="chat-input" style="width: 700px;">
+                <button id="send-button">Send</button>
+            </div>
+        </div>
+        <div>
+            <h2>Scoreboard</h2>
+            <ul id="scoreboard">
+            </ul>
+        </div>
+    </div>
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const socket = io();
+
+        let users = {};
+        const scoreboard = {};
+
+        let userId;
+
+        let rendered = false;
+        let targetX = 0;
+        let targetY = 0;
+
+        function checkTargetHit() {
+            if (userId && Math.abs(users[userId].x - targetX) < 10 && Math.abs(users[userId].y - targetY) < 10) {
+                targetX = Math.random() * canvas.width;
+                targetY = Math.random() * canvas.height;
+                scoreboard[userId]++;
+
+                socket.emit('targetHit', { id: userId, score: scoreboard[userId] });
+                updateScoreboard();
+                render();
+            }
+        }
+
+        socket.on('targetHit', (data) => {
+            if (data.id === userId) {
+                return;
+            }
+            scoreboard[data.id] = data.score;
+            updateScoreboard();
+            render();
+        });
+
+        function updateScoreboard() {
+            const scoreboardElement = document.getElementById('scoreboard');
+            scoreboardElement.innerHTML = '';
+            const sortedScores = Object.entries(scoreboard).sort((a, b) => b[1] - a[1]);
+            for (let [id, score] of sortedScores) {
+                if (score === 0 && id !== userId) {
+                    continue;
+                }
+                const scoreItem = document.createElement('li');
+                scoreItem.textContent = `${id}: ${score}`;
+                if (id === userId) {
+                    scoreItem.style.color = 'blue';
+                } else {
+                    scoreItem.style.color = 'red';
+                }
+                scoreboardElement.appendChild(scoreItem);
+            }
+        }
+
+        const render = () => {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            for (let id in users) {
+                ctx.beginPath();
+                ctx.arc(users[id].x, users[id].y, 10, 0, Math.PI * 2);
+
+                if (id === userId) {
+                    ctx.fillStyle = 'blue';
+                } else {
+                    ctx.fillStyle = 'red';
+                }
+                ctx.fill();
+                ctx.closePath();
+            }
+
+            if (!rendered) {
+                targetX = Math.random() * canvas.width;
+                targetY = Math.random() * canvas.height;
+                rendered = true;
+            }
+
+            ctx.beginPath();
+            ctx.arc(targetX, targetY, 10, 0, Math.PI * 2);
+            ctx.fillStyle = 'green';
+            ctx.fill();
+            ctx.closePath();
+
+            checkTargetHit();
+            render();
+        };
+
+        socket.on('init', (data) => {
+            users = data;
+            userId = socket.id;
+            for (let id in users) {
+                scoreboard[id] = 0;
+            }
+            updateScoreboard();
+            render();
+        });
+
+        socket.on('newUser', (data) => {
+            users[data.id] = data.position;
+            scoreboard[data.id] = 0;
+            updateScoreboard();
+            render();
+        });
+
+        socket.on('move', (data) => {
+            if (data.id == userId) {
+                return;
+            }
+
+            users[data.id] = data.position;
+            render();
+        });
+
+        socket.on('removeUser', (id) => {
+            delete users[id];
+            delete scoreboard[id];
+            updateScoreboard();
+            render();
+        });
+
+        const chatWindow = document.getElementById('chat-window');
+        const chatInput = document.getElementById('chat-input');
+        const sendButton = document.getElementById('send-button');
+
+        socket.on('message', (data) => {
+            const { id, message } = data;
+
+            if (userId === id) {
+                return;
+            }
+
+            addMessage(id, message);
+        });
+
+        sendButton.addEventListener('click', () => {
+            const message = chatInput.value;
+
+            if (message.trim() !== '') {
+                socket.emit('message', message);
+
+                addMessage(userId, message);
+
+                chatInput.value = '';
+            }
+        });
+
+        function addMessage(id, message) {
+            const messageElement = document.createElement('div');
+            messageElement.textContent = message;
+
+            const bubble = document.createElement('div');
+            bubble.style.border = '1px solid black';
+            bubble.style.borderRadius = '10px';
+            bubble.style.padding = '5px';
+            bubble.style.margin = '5px 0';
+            bubble.style.backgroundColor = id === userId ? 'lightblue' : 'lightgray';
+
+            const userIdElement = document.createElement('span');
+            userIdElement.textContent = id + ': ';
+            bubble.appendChild(userIdElement);
+            bubble.appendChild(document.createElement('br'));
+
+            const messageText = document.createElement('span');
+            messageText.textContent = message;
+            bubble.appendChild(messageText);
+
+            chatWindow.appendChild(bubble);
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+        }
+
+        chatInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                const message = chatInput.value;
+                if (message.trim() !== '') {
+                    socket.emit('message', message);
+                    chatInput.value = '';
+                    addMessage(userId, message);
+                }
+            }
+        });
+
+        // move the dot on arrow key press
+        document.addEventListener('keydown', (e) => {
+            if (userId) {
+                const step = 20;
+                switch (e.key) {
+                    case 'ArrowUp':
+                        users[userId].y -= step;
+                        break;
+                    case 'ArrowDown':
+                        users[userId].y += step;
+                        break;
+                    case 'ArrowLeft':
+                        users[userId].x -= step;
+                        break;
+                    case 'ArrowRight':
+                        users[userId].x += step;
+                        break;
+                }
+                socket.emit('move', users[userId]);
+                render();
+            }
+        });
+    </script>
+</body>
+
+</html>
